@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-AI台股雷達 PRO v13.5｜投資顧問版
+AI台股雷達 PRO v15.2｜世界冠軍版
 data_provider.py 完整修正版
 
 重點修正：
@@ -401,13 +401,34 @@ def get_tpex_stocks():
 
 @st.cache_data(ttl=60 * 60 * 12, show_spinner=False)
 def get_stock_universe(include_twse=True, include_tpex=True):
+    """
+    取得上市＋上櫃股票池。
+
+    PRO v15.2 修正重點：
+    Streamlit Cloud 有時 TPEx OpenAPI 會回空資料，導致「上櫃 = 0」。
+    這裡強制使用多層備援：
+    1. get_tpex_stocks() 原本的 TPEx OpenAPI + 收盤行情 + ISIN 備援
+    2. 如果合併後仍沒有任何上櫃股票，再直接呼叫 ISIN strMode=4 補回上櫃清單
+    """
     frames = []
 
+    twse_df = pd.DataFrame()
+    tpex_df = pd.DataFrame()
+
     if include_twse:
-        frames.append(get_twse_stocks())
+        twse_df = get_twse_stocks()
+        if twse_df is not None and not twse_df.empty:
+            frames.append(twse_df)
 
     if include_tpex:
-        frames.append(get_tpex_stocks())
+        tpex_df = get_tpex_stocks()
+
+        # 關鍵修正：若 TPEx OpenAPI 失敗，直接使用 ISIN 上櫃清單備援。
+        if tpex_df is None or tpex_df.empty:
+            tpex_df = get_isin_stocks(str_mode=4, market_name="上櫃")
+
+        if tpex_df is not None and not tpex_df.empty:
+            frames.append(tpex_df)
 
     frames = [f for f in frames if f is not None and not f.empty]
 
@@ -423,7 +444,17 @@ def get_stock_universe(include_twse=True, include_tpex=True):
             ]
         )
 
-    df = pd.concat(frames, ignore_index=True).drop_duplicates("stock_id")
+    df = pd.concat(frames, ignore_index=True)
+
+    # 如果上市、上櫃有同代號，優先保留原本市場資料；一般股票不會重複。
+    df = df.drop_duplicates(["stock_id", "market"])
+
+    # 二次保險：使用者勾選上櫃，但合併結果仍沒有上櫃時，補抓 ISIN。
+    if include_tpex and (df["market"] == "上櫃").sum() == 0:
+        backup = get_isin_stocks(str_mode=4, market_name="上櫃")
+        if backup is not None and not backup.empty:
+            df = pd.concat([df, backup], ignore_index=True).drop_duplicates(["stock_id", "market"])
+
     df["stock_id"] = df["stock_id"].astype(str)
     df["industry"] = df["industry"].apply(
         lambda x: normalize_industry(x, INDUSTRY_CODE_MAP)
@@ -436,7 +467,7 @@ def get_stock_universe(include_twse=True, include_tpex=True):
 
     df["theme_group"] = df["theme"].map(THEME_GROUP_MAP).fillna(df["theme"])
 
-    return df.sort_values("stock_id").reset_index(drop=True)
+    return df.sort_values(["market", "stock_id"]).reset_index(drop=True)
 
 
 # =========================================================

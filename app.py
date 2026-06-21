@@ -20,11 +20,11 @@ from fundamental import get_fundamental, fundamental_score
 from advisor import generate_advisor_summary
 from utils import grade, safe_round
 
-APP_TITLE_V14 = "AI台股雷達 PRO v15.0｜世界冠軍版"
+APP_TITLE_V14 = "AI台股雷達 PRO v15.2｜世界冠軍版"
 
 st.set_page_config(page_title=APP_TITLE_V14, page_icon="🏆", layout="wide")
-st.title("🏆 AI台股雷達 PRO v15.0｜世界冠軍版")
-st.caption("Minervini SEPA｜CANSLIM｜VCP｜RS強度｜法人籌碼｜三段股價潛力股TOP10")
+st.title("🏆 AI台股雷達 PRO v15.2｜世界冠軍版")
+st.caption("Minervini SEPA｜CANSLIM｜VCP｜RS強度｜法人籌碼｜極簡Excel決策報告")
 
 
 # =========================================================
@@ -448,6 +448,152 @@ def build_price_bucket_top10(result_df, top_n=10):
 
 
 # =========================================================
+# PRO v15.2 Excel 極簡報告工具
+# =========================================================
+
+SIMPLE_REPORT_COLS = [
+    "排名", "股票代號", "股票名稱", "收盤價", "主流族群",
+    "AI冠軍分數", "AI評級", "投資建議", "AI白話解讀",
+]
+
+FINAL_EXCEL_COL_RENAME = {
+    "股票代號": "代號",
+    "股票名稱": "名稱",
+    "收盤價": "股價",
+    "主流族群": "族群",
+}
+
+# 使用者指定 Excel 最終欄位：
+# 排名｜代號｜名稱｜股價｜族群｜AI冠軍分數｜AI評級｜投資建議｜AI白話解讀
+FINAL_EXCEL_COLS = [
+    "排名", "代號", "名稱", "股價", "族群",
+    "AI冠軍分數", "AI評級", "投資建議", "AI白話解讀",
+]
+
+
+def _to_final_excel_cols(df):
+    """把畫面與 Excel 報告統一縮成 9 欄，移除所有技術專有名詞。"""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=FINAL_EXCEL_COLS)
+
+    out = df.copy()
+
+    # 若股價區間表使用「區間排名」，統一改成「排名」。
+    if "排名" not in out.columns and "區間排名" in out.columns:
+        out = out.rename(columns={"區間排名": "排名"})
+
+    # 若沒有排名就自動補上。
+    if "排名" not in out.columns:
+        out.insert(0, "排名", range(1, len(out) + 1))
+
+    # 選取內部欄位後改成使用者要看的中文短欄名。
+    keep = [c for c in SIMPLE_REPORT_COLS if c in out.columns]
+    out = out[keep].rename(columns=FINAL_EXCEL_COL_RENAME)
+
+    # 確保欄位順序固定；缺欄補空值，避免 Excel 欄位跑掉。
+    for c in FINAL_EXCEL_COLS:
+        if c not in out.columns:
+            out[c] = ""
+
+    return out[FINAL_EXCEL_COLS]
+
+
+def _select_existing_cols(df, cols):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df[[c for c in cols if c in df.columns]].copy()
+
+
+def _simple_rank(df, cols=SIMPLE_REPORT_COLS, top_n=None):
+    if df is None or df.empty:
+        return pd.DataFrame(columns=FINAL_EXCEL_COLS)
+    out = _sort_world_champion(df.copy())
+    if "排名" in out.columns:
+        out = out.drop(columns=["排名"])
+    out.insert(0, "排名", range(1, len(out) + 1))
+    if top_n:
+        out = out.head(int(top_n))
+    return _to_final_excel_cols(out)
+
+
+def _price_bucket_simple(df, top_n=10):
+    buckets, _ = build_price_bucket_top10(df, top_n)
+    output = {}
+    for name, sub in buckets.items():
+        output[name] = _to_final_excel_cols(sub)
+    return output
+
+
+def _breakout_simple(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    out["距52週高點%"] = pd.to_numeric(out.get("距52週高點%"), errors="coerce")
+    out = out[
+        (out["距52週高點%"] <= 5)
+        & (out["Trend通過"].astype(str).str.lower().isin(["yes", "true", "1", "通過"]))
+    ].copy()
+    if "VCP通過" in out.columns:
+        vcp_yes = out["VCP通過"].astype(str).str.lower().isin(["yes", "true", "1", "通過"])
+        # 不強制每一檔都通過 VCP，但通過者排序優先。
+        out["_vcp_sort"] = vcp_yes.astype(int)
+    else:
+        out["_vcp_sort"] = 0
+    sort_cols = [c for c in ["_vcp_sort", "AI冠軍分數", "RS強度", "距52週高點%"] if c in out.columns]
+    ascending = [False, False, False, True][: len(sort_cols)]
+    if sort_cols:
+        out = out.sort_values(sort_cols, ascending=ascending)
+    out = out.drop(columns=["_vcp_sort"], errors="ignore").reset_index(drop=True)
+    if "排名" in out.columns:
+        out = out.drop(columns=["排名"])
+    out.insert(0, "排名", range(1, len(out) + 1))
+    return _to_final_excel_cols(out)
+
+
+def _institution_simple(df, top_n=30):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    for c in ["法人籌碼分", "AI冠軍分數", "外資連買", "投信連買"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    sort_cols = [c for c in ["法人籌碼分", "AI冠軍分數", "外資連買", "投信連買"] if c in out.columns]
+    if sort_cols:
+        out = out.sort_values(sort_cols, ascending=[False] * len(sort_cols))
+    out = out.reset_index(drop=True)
+    if "排名" in out.columns:
+        out = out.drop(columns=["排名"])
+    out.insert(0, "排名", range(1, len(out) + 1))
+    return _to_final_excel_cols(out.head(int(top_n)))
+
+
+def _write_excel_sheet(writer, df, sheet_name):
+    if df is None or df.empty:
+        pd.DataFrame({"說明": ["目前沒有符合條件的股票"]}).to_excel(
+            writer, index=False, sheet_name=sheet_name[:31]
+        )
+    else:
+        df.to_excel(writer, index=False, sheet_name=sheet_name[:31])
+
+
+def _format_excel_workbook(writer):
+    workbook = writer.book
+    for ws in workbook.worksheets:
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for col in ws.columns:
+            max_len = 8
+            col_letter = col[0].column_letter
+            for cell in col:
+                try:
+                    value_len = len(str(cell.value)) if cell.value is not None else 0
+                    max_len = max(max_len, min(value_len + 2, 36))
+                except Exception:
+                    pass
+            ws.column_dimensions[col_letter].width = max_len
+
+
+# =========================================================
 # 股票池與法人資料
 # =========================================================
 
@@ -528,21 +674,16 @@ elif mode == "冠軍股排行":
                     ascending=False,
                 ).reset_index(drop=True)
                 rank.insert(0, "排名", range(1, len(rank) + 1))
-                show_cols = [
-                    "排名", "股票代號", "股票名稱", "市場", "主流族群", "收盤價",
-                    "AI冠軍分數", "SEPA總分", "AI評級", "投資建議", "法人籌碼分",
-                    "財務品質分", "Trend通過", "VCP通過", "距52週高點%", "AI白話解讀",
-                ]
-                show_cols = [c for c in show_cols if c in rank.columns]
-                st.dataframe(rank[show_cols], use_container_width=True, hide_index=True)
+                rank_simple = _to_final_excel_cols(rank)
+                st.dataframe(rank_simple, use_container_width=True, hide_index=True)
 
                 buffer = io.BytesIO()
-                rank.to_excel(buffer, index=False)
+                rank_simple.to_excel(buffer, index=False)
                 buffer.seek(0)
                 st.download_button(
                     "下載冠軍股排行 Excel",
                     data=buffer.getvalue(),
-                    file_name=f"PRO_v15_0_冠軍股排行_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    file_name=f"PRO_v15_2_冠軍股排行_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
@@ -552,7 +693,7 @@ elif mode == "冠軍股排行":
 # =========================================================
 
 else:
-    st.subheader("🔎 世界冠軍股掃描器｜三段股價潛力股 TOP10")
+    st.subheader("🔎 世界冠軍股掃描器｜PRO v15.2 極簡決策報告")
     st.info("此模式會逐檔診斷上市櫃股票，第一次全市場掃描會比較久；掃過的資料會被 Streamlit 快取。")
 
     watchlist_codes = [x.strip() for x in watchlist_text.replace(",", "\n").splitlines() if x.strip()]
@@ -569,7 +710,7 @@ else:
     s2.metric("最低AI冠軍分數", min_champion_score)
     s3.metric("距52週高點以內", f"{near_high_pct}%")
 
-    if st.button("開始 PRO v15 世界冠軍股掃描", type="primary"):
+    if st.button("開始 PRO v15.2 世界冠軍股掃描", type="primary"):
         if not scan_codes:
             st.warning("沒有可掃描的股票。")
         else:
@@ -614,76 +755,73 @@ else:
                     pd.to_numeric(result_df["距52週高點%"], errors="coerce") <= 5
                 ]
 
-                price_buckets, price_bucket_all = build_price_bucket_top10(result_df, price_top_n)
+                # PRO v15.2：Excel 只輸出 9 欄極簡決策報告。
+                champion_top30 = _simple_rank(result_df, SIMPLE_REPORT_COLS, top_n=30)
+                price_buckets_simple = _price_bucket_simple(result_df, price_top_n)
+                breakout_simple = _breakout_simple(result_df)
+                institution_simple = _institution_simple(result_df, top_n=30)
+                complete_df = result_df.copy()
 
                 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+                    "🏆 冠軍股TOP30",
                     "💰 100元以下",
                     "💎 100～500元",
                     "👑 500元以上",
-                    "🏆 冠軍股候選",
                     "🚀 即將突破",
-                    "📊 全部結果",
-                    "⚠️ 掃描失敗",
+                    "🏦 法人追蹤",
+                    "📊 完整分析",
                 ])
 
-                show_cols = [
-                    "區間排名", "排名", "股票代號", "股票名稱", "市場", "主流族群", "收盤價",
-                    "AI冠軍分數", "SEPA總分", "Minervini階段", "RS強度", "Trend通過",
-                    "VCP通過", "距52週高點%", "距52週低點漲幅%", "法人籌碼分", "外資連買",
-                    "投信連買", "EPS", "EPS成長%", "ROE%", "營收成長%", "PE", "PEG", "投資建議",
-                ]
-                show_cols_result = [c for c in show_cols if c in result_df.columns]
+                with tab1:
+                    st.dataframe(champion_top30, use_container_width=True, hide_index=True)
 
-                def show_bucket(tab, title):
+                def show_simple_bucket(tab, title):
                     with tab:
-                        dfb = price_buckets.get(title, pd.DataFrame())
+                        dfb = price_buckets_simple.get(title, pd.DataFrame())
                         if dfb.empty:
                             st.info(f"目前沒有符合條件的 {title.replace(' TOP10', '')} 潛力股。")
                         else:
-                            cols = [c for c in show_cols if c in dfb.columns]
-                            st.dataframe(dfb[cols], use_container_width=True, hide_index=True)
+                            st.dataframe(dfb, use_container_width=True, hide_index=True)
 
-                show_bucket(tab1, "100元以下 TOP10")
-                show_bucket(tab2, "100～500元 TOP10")
-                show_bucket(tab3, "500元以上 TOP10")
-
-                with tab4:
-                    if top_df.empty:
-                        st.info("目前沒有冠軍股候選或即將突破觀察股。")
-                    else:
-                        st.dataframe(top_df[show_cols_result], use_container_width=True, hide_index=True)
+                show_simple_bucket(tab2, "100元以下 TOP10")
+                show_simple_bucket(tab3, "100～500元 TOP10")
+                show_simple_bucket(tab4, "500元以上 TOP10")
 
                 with tab5:
-                    if breakout_df.empty:
-                        st.info("目前沒有距離52週高點5%以內的股票。")
+                    if breakout_simple.empty:
+                        st.info("目前沒有距離52週高點5%以內且趨勢通過的股票。")
                     else:
-                        st.dataframe(breakout_df[show_cols_result], use_container_width=True, hide_index=True)
+                        st.dataframe(breakout_simple, use_container_width=True, hide_index=True)
 
                 with tab6:
-                    st.dataframe(result_df[show_cols_result], use_container_width=True, hide_index=True)
+                    if institution_simple.empty:
+                        st.info("目前沒有法人籌碼資料。")
+                    else:
+                        st.dataframe(institution_simple, use_container_width=True, hide_index=True)
 
                 with tab7:
+                    st.caption("完整分析保留所有程式計算欄位，給進階研究或除錯使用。")
+                    st.dataframe(complete_df, use_container_width=True, hide_index=True)
                     if errors:
-                        err_df = pd.DataFrame(errors)
-                        st.dataframe(err_df, use_container_width=True, hide_index=True)
-                    else:
-                        st.info("沒有掃描失敗的股票。")
+                        with st.expander("查看掃描失敗清單", expanded=False):
+                            st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
 
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                    result_df.to_excel(writer, index=False, sheet_name="全部結果")
-                    if not price_bucket_all.empty:
-                        price_bucket_all.to_excel(writer, index=False, sheet_name="三段股價TOP10")
-                    for sheet_name, dfb in price_buckets.items():
-                        safe_sheet = sheet_name.replace("～", "-").replace("元", "").replace(" ", "")[:31]
-                        dfb.to_excel(writer, index=False, sheet_name=safe_sheet)
-                    if errors:
-                        pd.DataFrame(errors).to_excel(writer, index=False, sheet_name="掃描失敗")
+                    _write_excel_sheet(writer, champion_top30, "冠軍股TOP30")
+                    _write_excel_sheet(writer, price_buckets_simple.get("100元以下 TOP10"), "100以下TOP10")
+                    _write_excel_sheet(writer, price_buckets_simple.get("100～500元 TOP10"), "100-500TOP10")
+                    _write_excel_sheet(writer, price_buckets_simple.get("500元以上 TOP10"), "500以上TOP10")
+                    _write_excel_sheet(writer, breakout_simple, "即將突破名單")
+                    _write_excel_sheet(writer, institution_simple, "法人追蹤榜")
+                    # PRO v15.2：Excel 只輸出使用者指定的 9 欄，
+                    # 不再輸出完整分析與掃描失敗表，避免報表又出現大量專有名詞。
+                    _format_excel_workbook(writer)
                 buffer.seek(0)
                 st.download_button(
-                    "下載 PRO v15 世界冠軍掃描 Excel",
+                    "下載 PRO v15.2 世界冠軍極簡報告 Excel",
                     data=buffer.getvalue(),
-                    file_name=f"PRO_v15_0_世界冠軍掃描_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    file_name=f"PRO_v15_2_世界冠軍極簡報告_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
