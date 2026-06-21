@@ -20,11 +20,11 @@ from fundamental import get_fundamental, fundamental_score
 from advisor import generate_advisor_summary
 from utils import grade, safe_round
 
-APP_TITLE_V14 = "AI台股雷達 PRO v14.0｜Minervini冠軍股掃描器"
+APP_TITLE_V14 = "AI台股雷達 PRO v15.0｜世界冠軍版"
 
 st.set_page_config(page_title=APP_TITLE_V14, page_icon="🏆", layout="wide")
-st.title("🏆 AI台股雷達 PRO v14.0｜Minervini冠軍股掃描器")
-st.caption("SEPA｜VCP｜RS強度｜法人籌碼｜財務品質｜Minervini冠軍股掃描")
+st.title("🏆 AI台股雷達 PRO v15.0｜世界冠軍版")
+st.caption("Minervini SEPA｜CANSLIM｜VCP｜RS強度｜法人籌碼｜三段股價潛力股TOP10")
 
 
 # =========================================================
@@ -143,7 +143,7 @@ with st.sidebar:
     st.header("模式設定")
     mode = st.radio(
         "選擇模式",
-        ["個股診斷", "冠軍股排行", "Minervini冠軍股掃描器"],
+        ["個股診斷", "冠軍股排行", "世界冠軍股掃描器"],
         index=0,
     )
     display_mode = st.radio("顯示模式", ["AI投資顧問版", "專業數據版"], index=0)
@@ -187,6 +187,7 @@ with st.sidebar:
     require_trend = st.checkbox("必須通過 Trend Template", value=True)
     require_vcp = st.checkbox("必須通過 VCP", value=False)
     only_positive_eps = st.checkbox("EPS必須大於0", value=True)
+    price_top_n = st.slider("三段股價各取前幾名", 3, 20, 10, 1)
 
 
 # =========================================================
@@ -396,6 +397,56 @@ def pass_minervini_filter(r):
     return True
 
 
+def _sort_world_champion(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    sort_cols = [
+        "AI冠軍分數", "SEPA總分", "RS強度",
+        "法人籌碼分", "距52週高點%", "ROE%", "營收成長%",
+    ]
+    for c in sort_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    use_cols = [c for c in sort_cols if c in df.columns]
+    ascending = [False, False, False, False, True, False, False][: len(use_cols)]
+    return df.sort_values(use_cols, ascending=ascending).reset_index(drop=True)
+
+
+def build_price_bucket_top10(result_df, top_n=10):
+    """
+    將候選股依股價切成三段：
+    1. 100元以下
+    2. 100～500元
+    3. 500元以上
+    各取 AI冠軍分數排序前 top_n 名。
+    """
+    if result_df is None or result_df.empty or "收盤價" not in result_df.columns:
+        return {}, pd.DataFrame()
+
+    df = result_df.copy()
+    df["收盤價"] = pd.to_numeric(df["收盤價"], errors="coerce")
+    df = df.dropna(subset=["收盤價"])
+
+    buckets = {
+        "100元以下 TOP10": df[df["收盤價"] < 100].copy(),
+        "100～500元 TOP10": df[(df["收盤價"] >= 100) & (df["收盤價"] <= 500)].copy(),
+        "500元以上 TOP10": df[df["收盤價"] > 500].copy(),
+    }
+
+    output = {}
+    all_rows = []
+    for name, sub in buckets.items():
+        sub = _sort_world_champion(sub).head(int(top_n)).copy()
+        if not sub.empty:
+            sub.insert(0, "股價區間", name.replace(" TOP10", ""))
+            sub.insert(1, "區間排名", range(1, len(sub) + 1))
+        output[name] = sub
+        all_rows.append(sub)
+
+    combined = pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
+    return output, combined
+
+
 # =========================================================
 # 股票池與法人資料
 # =========================================================
@@ -491,17 +542,17 @@ elif mode == "冠軍股排行":
                 st.download_button(
                     "下載冠軍股排行 Excel",
                     data=buffer.getvalue(),
-                    file_name=f"PRO_v14_0_冠軍股排行_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    file_name=f"PRO_v15_0_冠軍股排行_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
 
 # =========================================================
-# 模式三：Minervini冠軍股掃描器
+# 模式三：世界冠軍股掃描器
 # =========================================================
 
 else:
-    st.subheader("🔎 Minervini冠軍股掃描器")
+    st.subheader("🔎 世界冠軍股掃描器｜三段股價潛力股 TOP10")
     st.info("此模式會逐檔診斷上市櫃股票，第一次全市場掃描會比較久；掃過的資料會被 Streamlit 快取。")
 
     watchlist_codes = [x.strip() for x in watchlist_text.replace(",", "\n").splitlines() if x.strip()]
@@ -518,7 +569,7 @@ else:
     s2.metric("最低AI冠軍分數", min_champion_score)
     s3.metric("距52週高點以內", f"{near_high_pct}%")
 
-    if st.button("開始 Minervini 全市場掃描", type="primary"):
+    if st.button("開始 PRO v15 世界冠軍股掃描", type="primary"):
         if not scan_codes:
             st.warning("沒有可掃描的股票。")
         else:
@@ -563,34 +614,55 @@ else:
                     pd.to_numeric(result_df["距52週高點%"], errors="coerce") <= 5
                 ]
 
-                tab1, tab2, tab3, tab4 = st.tabs([
-                    "🏆 冠軍股候選", "🚀 即將突破", "📊 全部結果", "⚠️ 掃描失敗"
+                price_buckets, price_bucket_all = build_price_bucket_top10(result_df, price_top_n)
+
+                tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+                    "💰 100元以下",
+                    "💎 100～500元",
+                    "👑 500元以上",
+                    "🏆 冠軍股候選",
+                    "🚀 即將突破",
+                    "📊 全部結果",
+                    "⚠️ 掃描失敗",
                 ])
 
                 show_cols = [
-                    "排名", "股票代號", "股票名稱", "市場", "主流族群", "收盤價",
+                    "區間排名", "排名", "股票代號", "股票名稱", "市場", "主流族群", "收盤價",
                     "AI冠軍分數", "SEPA總分", "Minervini階段", "RS強度", "Trend通過",
                     "VCP通過", "距52週高點%", "距52週低點漲幅%", "法人籌碼分", "外資連買",
-                    "投信連買", "EPS", "EPS成長%", "ROE%", "營收成長%", "投資建議",
+                    "投信連買", "EPS", "EPS成長%", "ROE%", "營收成長%", "PE", "PEG", "投資建議",
                 ]
-                show_cols = [c for c in show_cols if c in result_df.columns]
+                show_cols_result = [c for c in show_cols if c in result_df.columns]
 
-                with tab1:
+                def show_bucket(tab, title):
+                    with tab:
+                        dfb = price_buckets.get(title, pd.DataFrame())
+                        if dfb.empty:
+                            st.info(f"目前沒有符合條件的 {title.replace(' TOP10', '')} 潛力股。")
+                        else:
+                            cols = [c for c in show_cols if c in dfb.columns]
+                            st.dataframe(dfb[cols], use_container_width=True, hide_index=True)
+
+                show_bucket(tab1, "100元以下 TOP10")
+                show_bucket(tab2, "100～500元 TOP10")
+                show_bucket(tab3, "500元以上 TOP10")
+
+                with tab4:
                     if top_df.empty:
                         st.info("目前沒有冠軍股候選或即將突破觀察股。")
                     else:
-                        st.dataframe(top_df[show_cols], use_container_width=True, hide_index=True)
+                        st.dataframe(top_df[show_cols_result], use_container_width=True, hide_index=True)
 
-                with tab2:
+                with tab5:
                     if breakout_df.empty:
                         st.info("目前沒有距離52週高點5%以內的股票。")
                     else:
-                        st.dataframe(breakout_df[show_cols], use_container_width=True, hide_index=True)
+                        st.dataframe(breakout_df[show_cols_result], use_container_width=True, hide_index=True)
 
-                with tab3:
-                    st.dataframe(result_df[show_cols], use_container_width=True, hide_index=True)
+                with tab6:
+                    st.dataframe(result_df[show_cols_result], use_container_width=True, hide_index=True)
 
-                with tab4:
+                with tab7:
                     if errors:
                         err_df = pd.DataFrame(errors)
                         st.dataframe(err_df, use_container_width=True, hide_index=True)
@@ -598,12 +670,20 @@ else:
                         st.info("沒有掃描失敗的股票。")
 
                 buffer = io.BytesIO()
-                result_df.to_excel(buffer, index=False)
+                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                    result_df.to_excel(writer, index=False, sheet_name="全部結果")
+                    if not price_bucket_all.empty:
+                        price_bucket_all.to_excel(writer, index=False, sheet_name="三段股價TOP10")
+                    for sheet_name, dfb in price_buckets.items():
+                        safe_sheet = sheet_name.replace("～", "-").replace("元", "").replace(" ", "")[:31]
+                        dfb.to_excel(writer, index=False, sheet_name=safe_sheet)
+                    if errors:
+                        pd.DataFrame(errors).to_excel(writer, index=False, sheet_name="掃描失敗")
                 buffer.seek(0)
                 st.download_button(
-                    "下載 Minervini 掃描結果 Excel",
+                    "下載 PRO v15 世界冠軍掃描 Excel",
                     data=buffer.getvalue(),
-                    file_name=f"PRO_v14_0_Minervini掃描_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    file_name=f"PRO_v15_0_世界冠軍掃描_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
